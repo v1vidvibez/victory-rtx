@@ -31,5 +31,6 @@ pub fn init(default_level: &str) {
                 .with_target(true)
                 .with_writer(std::io::stderr),
         )
+        .with(crate::telemetry::log_layer())
         .try_init();
 }

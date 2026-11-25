@@ -115,6 +115,11 @@ pub(crate) fn waiting() -> u64 {
     WAITING.load(Ordering::Relaxed)
 }
 
+/// Peak queued pipelines since the workers last drained.
+pub(crate) fn peak_waiting() -> u64 {
+    PEAK.load(Ordering::Relaxed)
+}
+
 /// The host pipeline if it is made (or is made within the frame's budget);
 /// queues it on first use.
 pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
@@ -221,6 +226,7 @@ const MAKING: u8 = 3;
 
 struct Queue {
     early: VecDeque<Arc<Pending>>,
+    early_depth: VecDeque<Arc<Pending>>,
     requested: VecDeque<Arc<Pending>>,
 }
 
@@ -228,6 +234,7 @@ impl Queue {
     const fn new() -> Self {
         Self {
             early: VecDeque::new(),
+            early_depth: VecDeque::new(),
             requested: VecDeque::new(),
         }
     }
@@ -242,6 +249,10 @@ impl Queue {
         p.queue_state.store(priority, Ordering::Relaxed);
         if priority == REQUESTED {
             self.requested.push_back(p.clone());
+        } else if p.graphics.as_ref().is_some_and(|state| state.writes_depth_only()) {
+            // Shadow maps and depth prepasses supply several later draws. Rebuild
+            // their previously used PSOs first while no draw is requesting one.
+            self.early_depth.push_back(p.clone());
         } else {
             self.early.push_back(p.clone());
         }
@@ -251,7 +262,7 @@ impl Queue {
     fn pop(&mut self) -> Option<Arc<Pending>> {
         let p = self.requested.pop_front().or_else(|| {
             // An early entry can have been promoted and claimed already.
-            std::iter::from_fn(|| self.early.pop_front())
+            std::iter::from_fn(|| self.early_depth.pop_front().or_else(|| self.early.pop_front()))
                 .find(|p| p.queue_state.load(Ordering::Relaxed) == EARLY)
         })?;
         p.queue_state.store(MAKING, Ordering::Relaxed);
@@ -298,7 +309,13 @@ fn workers() -> bool {
     static RUNNING: OnceLock<bool> = OnceLock::new();
     *RUNNING.get_or_init(|| {
         let mut running = false;
-        let workers = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 8));
+        let workers = std::env::var("VICTORY_PIPELINE_WORKERS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(2, |n| (n.get() / 4).clamp(2, 4))
+            });
         for i in 0..workers {
             let spawned = std::thread::Builder::new()
                 .name(format!("victory-pipelines-{i}"))
@@ -395,6 +412,30 @@ mod tests {
         assert!(Arc::ptr_eq(&queue.pop().unwrap(), &promoted));
         assert_eq!(queue.push(&promoted, REQUESTED), None);
         assert!(Arc::ptr_eq(&queue.pop().unwrap(), &earlier));
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn early_depth_precedes_other_prewarming_and_requests_precede_both() {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT;
+        let depth_pipeline = || {
+            let mut depth = Box::new(GraphicsState::default());
+            let format = [16u32, DXGI_FORMAT_D32_FLOAT.0 as u32];
+            // SAFETY: a complete depth-format subobject of the title pipeline stream.
+            unsafe { depth.read(16, format.as_ptr().cast()) };
+            Arc::new(Pending::new(Vec::new(), Some(depth)))
+        };
+        let normal = Arc::new(Pending::new(Vec::new(), None));
+        let promoted = depth_pipeline();
+        let shadow = depth_pipeline();
+        let mut queue = Queue::new();
+        for p in [&normal, &shadow, &promoted] {
+            assert_eq!(queue.push(p, EARLY), Some(true));
+        }
+        assert_eq!(queue.push(&promoted, REQUESTED), Some(false));
+        for expected in [&promoted, &shadow, &normal] {
+            assert!(Arc::ptr_eq(&queue.pop().unwrap(), expected));
+        }
         assert!(queue.pop().is_none());
     }
 }

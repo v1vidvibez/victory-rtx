@@ -5,6 +5,8 @@
 
 mod census;
 mod inspect;
+#[cfg(windows)]
+mod monitor;
 mod run;
 mod shader;
 mod translate;
@@ -114,6 +116,12 @@ enum Command {
     },
     /// Show the resolved configuration and check it.
     Config,
+    /// Open the live debug telemetry monitor attached to a running game PID.
+    Monitor {
+        /// Process id of the running `victory` title process.
+        #[arg(long)]
+        pid: u32,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -183,6 +191,17 @@ fn main() -> Result<()> {
             title_args: _,
         } => run::run(&exe, unimplemented, strict, execute, console),
         Command::Config => show_config(),
+        Command::Monitor { pid } => {
+            #[cfg(windows)]
+            {
+                monitor::run(pid)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = pid;
+                anyhow::bail!("debug monitor is only supported on Windows")
+            }
+        }
     }
 }
 

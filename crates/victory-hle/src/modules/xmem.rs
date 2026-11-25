@@ -1013,6 +1013,21 @@ pub extern "system" fn XMemTransferMemory(kind: u32, size: usize) -> BOOL {
     moved.into()
 }
 
+/// Non-blocking snapshot `(title_limit_bytes, physical_pages_used, physical_bytes_mapped)`
+/// for the companion debug monitor.
+pub(crate) fn telemetry_stats() -> (u64, u64, u64) {
+    let (gpu_optimal, standard) = victory_gpu::console::current().title_memory();
+    let limit = (gpu_optimal + standard).saturating_sub(TRANSFERRED.load(Ordering::Relaxed)) as u64;
+    let (pages, mapped) = if let Ok(p) = PHYSICAL.try_lock() {
+        let pages = p.pages.len() as u64;
+        let mapped: u64 = p.views.values().map(|(sz, _)| *sz as u64).sum();
+        (pages, mapped)
+    } else {
+        (0, 0)
+    };
+    (limit, pages, mapped)
+}
+
 pub(crate) fn module() -> HleModule {
     HleModule {
         name: "xmem",

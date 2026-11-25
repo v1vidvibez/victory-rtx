@@ -52,11 +52,13 @@ pub fn log_crashes_to(file: std::path::PathBuf) {
         let print = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             print(info);
-            append_to_log(&format!(
+            let msg = format!(
                 "VIctory: panic on thread {:?}: {info}\n{}",
                 std::thread::current().name().unwrap_or("?"),
                 title_output()
-            ));
+            );
+            victory_core::telemetry::mark_crashed(&format!("panic: {info}"));
+            append_to_log(&msg);
         }));
     }
 }
@@ -64,6 +66,7 @@ pub fn log_crashes_to(file: std::path::PathBuf) {
 /// Appends a failure that is not an exception (the host GPU's) to the crash
 /// log, with the title's last debug output, and prints it.
 pub fn log_crash(text: &str) {
+    victory_core::telemetry::mark_crashed(text);
     let text = format!("{text}
 {}", title_output());
     eprint!("{text}");
@@ -484,6 +487,13 @@ unsafe fn report(what: &str, info: *const EXCEPTION_POINTERS, to_file: bool) {
         code as u32,
         locate(at)
     ));
+    if to_file {
+        victory_core::telemetry::mark_crashed(&format!(
+            "{what} {:#010x} at {}{detail}",
+            code as u32,
+            locate(at)
+        ));
+    }
     line(format!(
         "  rax {:#x} rbx {:#x} rcx {:#x} rdx {:#x} rsi {:#x} rdi {:#x} rsp {:#x} rbp {:#x}",
         context.Rax,

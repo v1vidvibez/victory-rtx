@@ -62,6 +62,53 @@ pub fn use_shader_cache(dir: std::path::PathBuf) {
     let _ = dir;
 }
 
+/// Updates the startup progress in telemetry and the GPU overlay.
+pub fn set_progress(stage: &str, detail: &str, percent: u32) {
+    let phase = if percent >= 40 {
+        victory_core::telemetry::Phase::GpuInit
+    } else if percent >= 20 {
+        victory_core::telemetry::Phase::Loading
+    } else {
+        victory_core::telemetry::Phase::Preparing
+    };
+    victory_core::telemetry::set_stage(phase, stage, detail, percent);
+    #[cfg(windows)]
+    victory_gpu::progress::set_stage(stage, detail, percent);
+    #[cfg(not(windows))]
+    let _ = (stage, detail, percent);
+}
+
+#[cfg(windows)]
+fn sample_hle() -> victory_gpu::telemetry::HleSnapshot {
+    let ds = super::dstorage::telemetry_stats();
+    let (limit, pages, mapped) = super::xmem::telemetry_stats();
+    victory_gpu::telemetry::HleSnapshot {
+        dstorage_queues: ds.queues,
+        dstorage_workers: ds.workers,
+        dstorage_queued_reads: ds.queued_reads,
+        dstorage_running_reads: ds.running_reads,
+        dstorage_held_reads: ds.held_reads,
+        dstorage_done_reads: ds.done_reads,
+        dstorage_done_bytes: ds.done_bytes,
+        dstorage_bcpack_bytes: ds.bcpack_bytes,
+        dstorage_staged_bytes: ds.staged_bytes,
+        dstorage_staging_limit: ds.staging_limit,
+        dstorage_staging_waits: ds.staging_waits,
+        xmem_title_limit_bytes: limit,
+        xmem_physical_pages_used: pages,
+        xmem_physical_bytes_mapped: mapped,
+    }
+}
+
+/// Registers HLE telemetry sampling and starts GPU pipeline/shader tracking.
+pub fn enter_gpu_progress() {
+    #[cfg(windows)]
+    {
+        victory_gpu::telemetry::register_hle_sampler(sample_hle);
+        victory_gpu::progress::enter_gpu_phase();
+    }
+}
+
 pub(crate) fn module() -> HleModule {
     HleModule {
         name: "d3d12x",

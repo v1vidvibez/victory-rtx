@@ -2725,6 +2725,44 @@ pub(crate) fn memory() -> [u64; 6] {
     ]
 }
 
+/// Non-blocking memory snapshot across all builds for the debug monitor:
+/// `(live_copies, live_bytes, loose_windows, loose_bytes, card_copies, card_bytes, card_before_bytes)`.
+pub(crate) fn telemetry_memory() -> (u64, u64, u64, u64, u64, u64, u64) {
+    static CACHED_LOOSE: Mutex<(u64, u64)> = Mutex::new((0, 0));
+    static CACHED_CARDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (windows, window_bytes) = if let Ok(loose) = LOOSE.try_lock() {
+        let mut seen = std::collections::HashSet::new();
+        let bytes: u64 = loose
+            .values()
+            .filter(|s| seen.insert(Arc::as_ptr(s) as usize))
+            .map(|s| s.len)
+            .sum();
+        let val = (seen.len() as u64, bytes);
+        if let Ok(mut c) = CACHED_LOOSE.try_lock() {
+            *c = val;
+        }
+        val
+    } else {
+        CACHED_LOOSE.try_lock().map_or((0, 0), |c| *c)
+    };
+    let card_count = if let Ok(carded) = CARDED.try_lock() {
+        let n = carded.iter().filter(|w| w.strong_count() > 0).count() as u64;
+        CACHED_CARDED.store(n, Ordering::Relaxed);
+        n
+    } else {
+        CACHED_CARDED.load(Ordering::Relaxed)
+    };
+    (
+        LIVE[0].load(Ordering::Relaxed),
+        LIVE[1].load(Ordering::Relaxed),
+        windows,
+        window_bytes,
+        card_count,
+        CARD_BYTES[0].load(Ordering::Relaxed) + WINDOW_CARD_BYTES.load(Ordering::Relaxed),
+        CARD_BYTES[1].load(Ordering::Relaxed),
+    )
+}
+
 // SAFETY: D3D12 resources are free-threaded; `data` is a persistent mapping
 // written only on the submitting thread.
 unsafe impl Send for Shadow {}

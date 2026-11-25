@@ -117,6 +117,11 @@ pub fn sub(t: T, n: u64) {
     TOTAL[t as usize].fetch_sub(n, Relaxed);
 }
 
+/// Non-destructive snapshot of cumulative frame-log totals.
+pub(crate) fn snapshot() -> [u64; N] {
+    std::array::from_fn(|i| TOTAL[i].load(Relaxed))
+}
+
 /// What a thread did inside our calls since its last present: for the
 /// thread that presents (the title's render thread).
 #[derive(Clone, Copy)]

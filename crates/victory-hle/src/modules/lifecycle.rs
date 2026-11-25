@@ -212,6 +212,7 @@ pub(crate) fn end_title(why: &'static str, then: Box<dyn FnOnce() + Send>) {
         if let Some(then) = then.take() {
             then();
         }
+        victory_core::telemetry::mark_exited(0);
         end();
     };
     let late = finish.clone();

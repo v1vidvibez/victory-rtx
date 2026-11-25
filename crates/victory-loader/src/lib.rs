@@ -56,6 +56,19 @@ pub use windows::{
     BindReport, LoadedImage, MissingImport, WithTitleDlls, load, load_title_dll, load_title_dlls,
 };
 
+/// Makes mapped image pages `EXECUTE_READWRITE` so pre-launch patches can
+/// overwrite `.rdata` / `.text` before the title runs.
+///
+/// # Safety
+/// `base` must start an image mapped in this process and `size` is its size.
+#[cfg(windows)]
+pub unsafe fn make_writable(base: *const core::ffi::c_void, size: usize) -> bool {
+    use windows_sys::Win32::System::Memory::{PAGE_EXECUTE_READWRITE, VirtualProtect};
+    let mut before = 0u32;
+    // SAFETY: the caller's contract.
+    unsafe { VirtualProtect(base, size, PAGE_EXECUTE_READWRITE, &mut before) != 0 }
+}
+
 /// `DLL_PROCESS_ATTACH`, for TLS callbacks.
 pub const DLL_PROCESS_ATTACH: u32 = 1;
 /// `DLL_PROCESS_DETACH`.

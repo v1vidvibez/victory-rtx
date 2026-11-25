@@ -476,15 +476,20 @@ fn card_clock_watch(clock: &'static CardClock) {
 }
 
 /// For the frame-rate line: [`CARD_CLOCK_US`] per frame, `ms` being the
-/// frame's time.
-fn card_clock_line(frames: f64, ms: f64) {
+/// frame's time. Returns `(idle_ms, behind_ms, busy_pct)`.
+fn card_clock_line(frames: f64, ms: f64) -> (f64, f64, f64) {
     let [idle, behind, stood] = [0, 1, 2].map(|i| CARD_CLOCK_US[i].swap(0, Ordering::Relaxed) as f64 / 1000.0 / frames);
+    let busy_pct = if ms > 0.0 {
+        (100.0 * (1.0 - idle / ms)).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
     tracing::info!(
-        "the card's clock per frame: nothing of ours queued {idle:.1} ms (the card about {:.0}% busy by this count), \
+        "the card's clock per frame: nothing of ours queued {idle:.1} ms (the card about {busy_pct:.0}% busy by this count), \
          {behind:.1} ms of that while the submitting thread was working (the card idle behind us), the rest while the title \
          had not submitted; the submitting thread stood waiting for the card {stood:.1} ms",
-        if ms > 0.0 { (100.0 * (1.0 - idle / ms)).clamp(0.0, 100.0) } else { 0.0 }
     );
+    (idle, behind, busy_pct)
 }
 
 /// Of the preparing: title memory copies (microseconds, bytes) and texture
@@ -568,6 +573,7 @@ pub(crate) fn fail(what: std::fmt::Arguments) -> ! {
         }
     }
     tracing::error!("{text}");
+    victory_core::telemetry::mark_crashed(&text);
     // Tests have no log: the reason goes to their output.
     #[cfg(test)]
     eprintln!("host GPU failure: {text}");
@@ -672,10 +678,13 @@ fn create() -> windows::core::Result<Host> {
         // the widest wave the GPU runs: 32 (NVIDIA) gets console wave64 compute programs whose
         // cross-lane code stays in 32-lane halves translated for waves of 32
         let mut o1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+        let (mut wave_min, mut wave_max) = (0u32, 0u32);
         if device
             .CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, (&raw mut o1).cast(), size_of_val(&o1) as u32)
             .is_ok()
         {
+            wave_min = o1.WaveLaneCountMin;
+            wave_max = o1.WaveLaneCountMax;
             tracing::info!(min = o1.WaveLaneCountMin, max = o1.WaveLaneCountMax, "host wave lanes");
             victory_shader::emit::set_host_max_wave(o1.WaveLaneCountMax);
         }
@@ -719,6 +728,16 @@ fn create() -> windows::core::Result<Host> {
         let adapter = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
             .and_then(|factory| factory.EnumAdapterByLuid::<IDXGIAdapter3>(device.GetAdapterLuid()))
             .ok();
+        let adapter_name = adapter
+            .as_ref()
+            .and_then(|a| a.GetDesc1().ok())
+            .map(|d| {
+                let end = d.Description.iter().position(|&c| c == 0).unwrap_or(d.Description.len());
+                String::from_utf16_lossy(&d.Description[..end])
+            })
+            .unwrap_or_default();
+        crate::telemetry::set_device_info(&adapter_name, wave_min, wave_max, upload);
+        crate::telemetry::start();
         tracing::info!("host D3D12 device ready");
         Ok(Host {
             device,
@@ -7935,7 +7954,8 @@ impl Meter {
         let [back_ms, back_mb] = [0, 1].map(|i| {
             COPY_BACK[i].swap(0, Ordering::Relaxed) as f64 / [1e3, 1e6][i] / frames
         });
-        let dropped = crate::draw::take_dropped() as f64 / frames;
+        let dropped_raw = crate::draw::take_dropped();
+        let dropped = dropped_raw as f64 / frames;
         let indirect = crate::list::take_indirect() as f64 / frames;
         let mesh_largest = MESH_GROUPS[0].swap(0, Ordering::Relaxed);
         let mesh_groups = MESH_GROUPS[1].swap(0, Ordering::Relaxed) as f64 / frames;
@@ -7957,7 +7977,26 @@ impl Meter {
         crate::shadow::exact_line(frames);
         crate::descriptor::sync_line(frames);
         late_line(frames);
-        card_clock_line(frames, ms);
+        let (card_idle_ms, card_idle_behind_ms, card_busy_pct) = card_clock_line(frames, ms);
+        crate::telemetry::record_meter(
+            fps,
+            ms,
+            draws,
+            dropped,
+            dropped_raw,
+            indirect,
+            cpu,
+            gpu,
+            copy_ms,
+            copy_mb,
+            texture_ms,
+            texture_mb,
+            back_ms,
+            back_mb,
+            card_idle_ms,
+            card_idle_behind_ms,
+            card_busy_pct,
+        );
         crate::queue2::line(frames);
         crate::plaincopy::line(frames);
         #[cfg(feature = "diagnostics")]
@@ -8156,7 +8195,14 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        let loading = if crate::pipeline::making() > 0 {
+            crate::progress::status()
+                .map(|(done, total, pct, _, _)| format!(" | Loading {pct}% ({done}/{total} pipelines)"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame{loading}");
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
@@ -8283,6 +8329,7 @@ impl Host {
             // The frame rate, into the corner of what is shown (not of the
             // title's own frame, which the lines below read back).
             crate::fpsbox::draw(self, list, &back, (width, height, format));
+            crate::progress::draw(self, list, &back, (width, height, format));
             #[cfg(feature = "diagnostics")]
             let capture = crate::capture::wanted(frame)
                 .then(|| crate::capture::read_back(&self.device, list, texture))
@@ -8313,6 +8360,7 @@ impl Host {
             }
             let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
             p.meter.frame(p.hwnd);
+            crate::telemetry::on_present(frame, crate::frame::current(), width, height);
             #[cfg(feature = "diagnostics")]
             return Some(probe.is_some_and(|b| crate::capture::black(&b)));
             #[cfg(not(feature = "diagnostics"))]

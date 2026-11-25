@@ -487,6 +487,29 @@ pub(crate) fn making() -> u64 {
     make::waiting()
 }
 
+/// Host pipelines made and loaded from the library so far.
+#[cfg(windows)]
+pub(crate) fn counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering;
+    (
+        library::MADE.load(Ordering::Relaxed),
+        library::LOADED.load(Ordering::Relaxed),
+    )
+}
+
+/// Snapshot of `(made, loaded, early_started, waiting, peak_waiting)` pipelines.
+#[cfg(windows)]
+pub(crate) fn telemetry_counts() -> (u64, u64, u64, u64, u64) {
+    use std::sync::atomic::Ordering;
+    (
+        library::MADE.load(Ordering::Relaxed),
+        library::LOADED.load(Ordering::Relaxed),
+        library::EARLY.load(Ordering::Relaxed),
+        make::waiting(),
+        make::peak_waiting(),
+    )
+}
+
 /// Draws and dispatches dropped since the last [`take_drops`], by reason
 /// (diagnostics).
 #[cfg(all(windows, feature = "diagnostics"))]
@@ -749,6 +772,8 @@ pub(crate) extern "system" fn create_stream(
         };
         at += size;
     }
+    #[cfg(windows)]
+    graphics.apply_integer_blend_bypass();
     hand_out(
         shaders,
         #[cfg(windows)]

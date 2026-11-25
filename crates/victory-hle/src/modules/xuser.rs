@@ -262,9 +262,9 @@ extern "system" fn unregister(_: This, _token: u64, _wait: bool) -> bool {
     true
 }
 
-/// No input device belongs to a user.
-extern "system" fn find_for_device(_: This, _device: *const c_void, _: *mut Handle) -> HRESULT {
-    USER_NOT_FOUND
+/// Every input device belongs to the single offline local user.
+extern "system" fn find_for_device(_: This, _device: *const c_void, out: *mut Handle) -> HRESULT {
+    found(true, out)
 }
 
 // Unset slots (no title seen calls them): maximum users, gamer pictures,

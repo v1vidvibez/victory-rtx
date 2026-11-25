@@ -53,6 +53,10 @@ pub mod list;
 pub mod object;
 pub mod pipeline;
 #[cfg(windows)]
+pub mod progress;
+#[cfg(windows)]
+pub mod telemetry;
+#[cfg(windows)]
 mod plaincopy;
 #[cfg(windows)]
 mod primitive;

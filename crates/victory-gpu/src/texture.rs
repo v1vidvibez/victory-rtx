@@ -43,6 +43,10 @@ pub(crate) struct Staging {
     layout: victory_formats::texture::Layout,
     /// Mips per array slice.
     mips: u32,
+    /// The title's levels the host texture leaves out
+    /// (`crate::resource::drop_levels`): host level `m` is title level
+    /// `m + drop`.
+    drop: u32,
     /// The staging buffer's bytes (counted in `STAGED` while it lives).
     bytes: u64,
     memory: *const u8,
@@ -224,6 +228,11 @@ pub(crate) fn alias(list: &HostList, placed: This, source: This) -> bool {
     const TARGET_OR_UNORDERED: u32 = 0x4 | 0x8;
     const COPY_DEST: u32 = 0x400;
     const COPY_SOURCE: u32 = 0x800;
+    // Host copies with other levels than each other's: filled from title
+    // memory instead (`crate::resource::drop_levels`).
+    if crate::resource::dropped(placed) != crate::resource::dropped(source) {
+        return false;
+    }
     let (Some(to), Some(from)) = (
         crate::resource::host_resource(placed),
         crate::resource::host_resource(source),
@@ -525,6 +534,13 @@ pub(crate) fn memory() -> [u64; 3] {
         .as_ref()
         .map_or(0, |map| map.len() as u64);
     [STAGED[0].load(Relaxed), STAGED[1].load(Relaxed), kept]
+}
+
+/// Non-blocking snapshot of staging buffers alive, their bytes, and pooled spare bytes.
+pub(crate) fn telemetry_memory() -> (u64, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let spare = SPARE.try_lock().map_or(0, |s| s.1);
+    (STAGED[0].load(Relaxed), STAGED[1].load(Relaxed), spare)
 }
 
 /// Staging buffers let go as idle since the start, and their bytes.
@@ -1222,7 +1238,7 @@ impl Staging {
             }
             if let Err(e) =
                 self.layout
-                    .detile(tiled, mip, slice, linear, pitch, pitch * rows as usize)
+                    .detile(tiled, mip + self.drop, slice, linear, pitch, pitch * rows as usize)
             {
                 tracing::warn!(?e, mip, slice, "texture not detiled");
                 return;
@@ -1527,6 +1543,7 @@ fn staging(resource: This, texture: &ID3D12Resource) -> Option<Arc<Staging>> {
         rows,
         layout,
         mips: u32::from(d.MipLevels),
+        drop: crate::resource::drop_levels(&desc),
         bytes: total,
         memory,
         last: Mutex::default(),

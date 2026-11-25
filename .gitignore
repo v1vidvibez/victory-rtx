@@ -76,3 +76,5 @@
 *.swp
 Thumbs.db
 .DS_Store
+/last-run.log
+/launch-gta6.*

@@ -396,10 +396,11 @@ struct Job {
 // SAFETY: as for `Lane`.
 unsafe impl Send for Job {}
 
+static SCHEDULER: OnceLock<Option<Scheduler>> = OnceLock::new();
+
 /// The scheduler, with its workers started on first use; `None` if not
 /// even one worker could start.
 fn scheduler() -> Option<&'static Scheduler> {
-    static SCHEDULER: OnceLock<Option<Scheduler>> = OnceLock::new();
     static STARTED: std::sync::Once = std::sync::Once::new();
     let scheduler = SCHEDULER
         .get_or_init(|| {
@@ -425,7 +426,13 @@ fn scheduler() -> Option<&'static Scheduler> {
         })
         .as_ref()?;
     STARTED.call_once(|| {
-        let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let workers = std::env::var("VICTORY_DSTORAGE_WORKERS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).clamp(2, 6))
+            });
         let started = (0..workers)
             .filter(|i| {
                 std::thread::Builder::new()
@@ -434,6 +441,7 @@ fn scheduler() -> Option<&'static Scheduler> {
                     .is_ok()
             })
             .count();
+        WORKER_COUNT.store(started as u32, Ordering::Relaxed);
         tracing::info!(workers = started, "dstorage: workers");
     });
     Some(scheduler)
@@ -530,6 +538,8 @@ impl Lanes {
         *requests += 1;
         *bytes += u64::from(job.request.destination_size);
         *busy += started.elapsed();
+        TOTAL_DONE_READS.fetch_add(1, Ordering::Relaxed);
+        TOTAL_DONE_BYTES.fetch_add(u64::from(job.request.destination_size), Ordering::Relaxed);
         #[cfg(windows)]
         {
             use victory_gpu::framelog::{T, add};
@@ -540,6 +550,7 @@ impl Lanes {
         if job.request.options & BCPACK != 0 {
             self.bcpack.0 += u64::from(job.request.destination_size);
             self.bcpack.1 += started.elapsed();
+            TOTAL_BCPACK_BYTES.fetch_add(u64::from(job.request.destination_size), Ordering::Relaxed);
         }
         let since = *self.since.get_or_insert(started);
         let elapsed = since.elapsed();
@@ -580,6 +591,7 @@ impl Lanes {
         if self.staged > 0 && self.staged + staging > self.staging {
             self.starved = true;
             self.refused += 1;
+            TOTAL_REFUSED.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         lane.reads.pop_front();
@@ -1082,6 +1094,73 @@ fn read_source(request: &Request) -> Result<Cow<'static, [u8]>, HRESULT> {
 
 /// Nanoseconds workers spent reading files, for the debug summary.
 static READING: AtomicU64 = AtomicU64::new(0);
+static WORKER_COUNT: AtomicU32 = AtomicU32::new(0);
+static TOTAL_DONE_READS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_DONE_BYTES: AtomicU64 = AtomicU64::new(0);
+static TOTAL_BCPACK_BYTES: AtomicU64 = AtomicU64::new(0);
+static TOTAL_REFUSED: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DStorageTelemetry {
+    pub queues: u32,
+    pub workers: u32,
+    pub queued_reads: u64,
+    pub running_reads: u64,
+    pub held_reads: u64,
+    pub done_reads: u64,
+    pub done_bytes: u64,
+    pub bcpack_bytes: u64,
+    pub staged_bytes: u64,
+    pub staging_limit: u64,
+    pub staging_waits: u64,
+}
+
+static LAST_QUEUE_SNAPSHOT: Mutex<(u32, u64, u64, u64, u64, u64)> = Mutex::new((0, 0, 0, 0, 0, STAGING));
+
+pub(crate) fn telemetry_stats() -> DStorageTelemetry {
+    let (queues, queued_reads, running_reads, held_reads, staged_bytes, staging_limit) =
+        if let Some(sched) = scheduler_if_init()
+            && let Ok(lanes) = sched.lanes.try_lock()
+        {
+            let queues = lanes.lanes.values().filter(|l| !l.closed).count() as u32;
+            let queued_reads: u64 = lanes.lanes.values().map(|l| l.reads.len() as u64).sum();
+            let running_reads: u64 = lanes.lanes.values().map(|l| l.running.len() as u64).sum();
+            let held_reads: u64 = lanes.lanes.values().map(|l| l.held.len() as u64).sum();
+            let val = (
+                queues,
+                queued_reads,
+                running_reads,
+                held_reads,
+                lanes.staged,
+                lanes.staging,
+            );
+            if let Ok(mut cached) = LAST_QUEUE_SNAPSHOT.try_lock() {
+                *cached = val;
+            }
+            val
+        } else {
+            LAST_QUEUE_SNAPSHOT
+                .try_lock()
+                .map_or((0, 0, 0, 0, 0, STAGING), |c| *c)
+        };
+    DStorageTelemetry {
+        queues,
+        workers: WORKER_COUNT.load(Ordering::Relaxed),
+        queued_reads,
+        running_reads,
+        held_reads,
+        done_reads: TOTAL_DONE_READS.load(Ordering::Relaxed),
+        done_bytes: TOTAL_DONE_BYTES.load(Ordering::Relaxed),
+        bcpack_bytes: TOTAL_BCPACK_BYTES.load(Ordering::Relaxed),
+        staged_bytes,
+        staging_limit,
+        staging_waits: TOTAL_REFUSED.load(Ordering::Relaxed),
+    }
+}
+
+fn scheduler_if_init() -> Option<&'static Scheduler> {
+    SCHEDULER.get().and_then(|o| o.as_ref())
+}
 
 /// Fills `out` (the source size) from the request's file or memory.
 fn read_into(request: &Request, out: &mut [u8]) -> Result<(), HRESULT> {
