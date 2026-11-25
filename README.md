@@ -15,7 +15,8 @@ developer or publisher.
 
 | Feature / Switch | Effect |
 |------------------|--------|
-| `VICTORY_RESOLUTION=WxH` | Caps entries in the title's resolution ladder above `W×H` (e.g. `1920x1080` or `1280x720`) so render targets and swap chain stay within an 8 GB VRAM budget |
+| `VICTORY_RESOLUTION=WxH` | Caps entries in the title's resolution ladder above `W×H` (e.g. `1920x1080` or `1280x720`) so render targets and swap chain stay within an 8 GB VRAM budget (DXGI display mode follows this unless `VICTORY_DISPLAY_MODE` is set) |
+| `VICTORY_FULLSCREEN=0` | Disables default borderless fullscreen mode and keeps the windowed frame (`WS_OVERLAPPEDWINDOW`) |
 | `VICTORY_TEXTURE_DROP_MIPS=N` | Drops the `N` largest mip levels (`0..=4`, default `0`) on qualifying 2D, array, and cube textures and shifts SRV mip ranges accordingly |
 | `VICTORY_MWAITX_SLEEP=1` | Replaces busy `monitorx`/`mwaitx` exception spinning on Intel CPUs with `WaitOnAddress` sleeps after `VICTORY_MWAITX_SPIN_US` (default `50` µs), waking on fence updates |
 | `VICTORY_MWAITX_PATCH=1` | Alternative `monitorx`/`mwaitx` instruction patching mode (off by default) |
@@ -34,7 +35,7 @@ telemetry section (`Local\victory-telemetry-<pid>`).
 - Controls: **Pause** (`P`), **Always-on-top** (`T`), **Pin on clean exit** (`K`), **Copy Markdown snapshot** (`C`)
 - Auto-retains the window if the title crashes or exits with a non-zero exit code
 - Manual attach: `victory monitor --pid <PID>`
-- Opt-out switches: `VICTORY_MONITOR=0` (disable auto-launch), `VICTORY_PROGRESS=0` (disable startup progress updates)
+- Opt-out switch: `VICTORY_MONITOR=0` (disable auto-launch)
 
 ### Quick start (example 8 GB RTX laptop preset)
 
@@ -64,6 +65,7 @@ $env:VICTORY_ABSENT_ONCE        = '1'
 $env:VICTORY_MWAITX_SLEEP       = '1'
 $env:VICTORY_TEXTURE_DROP_MIPS  = '2'
 $env:VICTORY_RESOLUTION         = '1920x1080'
+$env:VICTORY_DISPLAY_MODE       = '1920x1080'
 $env:VICTORY_PIPELINE_WORKERS   = '3'
 $env:VICTORY_DSTORAGE_WORKERS   = '4'
 $env:VICTORY_CARD_WINDOWS_MB    = '512'

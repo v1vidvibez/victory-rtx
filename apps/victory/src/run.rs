@@ -19,6 +19,12 @@ pub fn run(
     // A title that relaunched itself: the old process must be gone first.
     victory_hle::modules::lifecycle::wait_for_previous();
     if execute {
+        // SAFETY: enables per-monitor DPI awareness before any title or monitor window opens.
+        unsafe {
+            let _ = windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+                windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
+        }
         init_telemetry_and_monitor(exe);
         victory_hle::modules::d3d12x::set_progress(
             "Preparing executable...",

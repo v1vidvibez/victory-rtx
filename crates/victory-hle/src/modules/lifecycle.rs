@@ -12,8 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
+};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+use windows_sys::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{self as wm, HMENU};
 use windows_sys::core::{PCSTR, PCWSTR, w};
 
@@ -59,6 +65,86 @@ pub extern "system" fn UnregisterAppStateChangeNotification(registration: usize)
 /// The window procedure a title window had before ours.
 const TITLE_PROC: PCWSTR = w!("victory.wndproc");
 
+fn fullscreen_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_FULLSCREEN").is_none_or(|v| v != "0"))
+}
+
+fn ensure_dpi_aware() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: safe Win32 call; returns non-zero if not already set in process/manifest.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+    });
+}
+
+fn monitor_bounds(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+    let pt = POINT {
+        x: if x == wm::CW_USEDEFAULT { 0 } else { x },
+        y: if y == wm::CW_USEDEFAULT { 0 } else { y },
+    };
+    // SAFETY: queries monitor rect containing `pt` (or primary monitor).
+    unsafe {
+        let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &raw mut info) == 0 {
+            return None;
+        }
+        let r = info.rcMonitor;
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        (w > 0 && h > 0).then_some((r.left, r.top, w, h))
+    }
+}
+
+fn prepare_top_level_window(
+    ex_style: u32,
+    style: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    parent: HWND,
+) -> (u32, u32, i32, i32, i32, i32, bool) {
+    if !parent.is_null() {
+        return (ex_style, style, x, y, width, height, false);
+    }
+    if fullscreen_enabled() && width >= 320 && height >= 200 {
+        ensure_dpi_aware();
+        if let Some((mx, my, mw, mh)) = monitor_bounds(x, y) {
+            const CHROME_MASK: u32 = wm::WS_CAPTION
+                | wm::WS_THICKFRAME
+                | wm::WS_MINIMIZEBOX
+                | wm::WS_MAXIMIZEBOX
+                | wm::WS_SYSMENU
+                | wm::WS_BORDER
+                | wm::WS_DLGFRAME;
+            const EX_CHROME_MASK: u32 = wm::WS_EX_DLGMODALFRAME
+                | wm::WS_EX_WINDOWEDGE
+                | wm::WS_EX_CLIENTEDGE
+                | wm::WS_EX_STATICEDGE;
+            let new_ex = ex_style & !EX_CHROME_MASK;
+            let new_style = (style & !CHROME_MASK) | wm::WS_POPUP;
+            tracing::info!(
+                width,
+                height,
+                to = ?(mw, mh),
+                "title window set to borderless fullscreen"
+            );
+            return (new_ex, new_style, mx, my, mw, mh, true);
+        }
+    }
+    let (fx, fy, fw, fh) = fit(parent, x, y, width, height);
+    (ex_style, style, fx, fy, fw, fh, false)
+}
+
 pub extern "system" fn CreateWindowExW(
     ex_style: u32,
     class: PCWSTR,
@@ -73,13 +159,28 @@ pub extern "system" fn CreateWindowExW(
     instance: HINSTANCE,
     param: *const c_void,
 ) -> HWND {
-    let (x, y, width, height) = fit(parent, x, y, width, height);
-    // SAFETY: the title's own arguments, forwarded (the size fitted).
+    let (ex_style, style, x, y, width, height, fs) =
+        prepare_top_level_window(ex_style, style, x, y, width, height, parent);
+    // SAFETY: the title's own arguments, forwarded (fitted or fullscreen).
     let hwnd = unsafe {
         wm::CreateWindowExW(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
         )
     };
+    if fs && !hwnd.is_null() {
+        // SAFETY: `hwnd` was just created above with borderless fullscreen dimensions.
+        unsafe {
+            let _ = wm::SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                width,
+                height,
+                wm::SWP_FRAMECHANGED | wm::SWP_NOACTIVATE | wm::SWP_NOZORDER,
+            );
+        }
+    }
     hook(hwnd);
     hwnd
 }
@@ -99,13 +200,28 @@ pub extern "system" fn CreateWindowExA(
     instance: HINSTANCE,
     param: *const c_void,
 ) -> HWND {
-    let (x, y, width, height) = fit(parent, x, y, width, height);
-    // SAFETY: the title's own arguments, forwarded (the size fitted).
+    let (ex_style, style, x, y, width, height, fs) =
+        prepare_top_level_window(ex_style, style, x, y, width, height, parent);
+    // SAFETY: the title's own arguments, forwarded (fitted or fullscreen).
     let hwnd = unsafe {
         wm::CreateWindowExA(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
         )
     };
+    if fs && !hwnd.is_null() {
+        // SAFETY: `hwnd` was just created above with borderless fullscreen dimensions.
+        unsafe {
+            let _ = wm::SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                width,
+                height,
+                wm::SWP_FRAMECHANGED | wm::SWP_NOACTIVATE | wm::SWP_NOZORDER,
+            );
+        }
+    }
     hook(hwnd);
     hwnd
 }
