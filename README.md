@@ -1,16 +1,92 @@
-# VIctory fork (work in progress)
+# VIctory RTX (`victory-rtx`)
 
-A work-in-progress fork of [VIctory](https://github.com/Marvisak/VIctory), a
-compatibility layer that runs an Xbox Series title natively on Windows from
-files the user supplies. This fork follows upstream
-`main` and adds fixes aimed at one goal: getting the game's world to render
-correctly and playably on one particular PC.
+A fork of [fxceless/victory-fork](https://github.com/fxceless/victory-fork) (based on
+[VIctory](https://github.com/Marvisak/VIctory)) tuned for **8 GB VRAM NVIDIA RTX
+GPUs** and **hybrid Intel CPUs** on Windows, with a built-in **companion live debug
+monitor** (`victory monitor`).
 
 **This repository contains no game files, code or assets.** You need your own
 copy of the game. It is not affiliated with or endorsed by the game's
 developer or publisher.
 
-## Credits
+## What `victory-rtx` adds
+
+### 8 GB VRAM & hybrid-CPU optimizations
+
+| Feature / Switch | Effect |
+|------------------|--------|
+| `VICTORY_RESOLUTION=WxH` | Caps entries in the title's resolution ladder above `W×H` (e.g. `1920x1080` or `1280x720`) so render targets and swap chain stay within an 8 GB VRAM budget |
+| `VICTORY_TEXTURE_DROP_MIPS=N` | Drops the `N` largest mip levels (`0..=4`, default `0`) on qualifying 2D, array, and cube textures and shifts SRV mip ranges accordingly |
+| `VICTORY_MWAITX_SLEEP=1` | Replaces busy `monitorx`/`mwaitx` exception spinning on Intel CPUs with `WaitOnAddress` sleeps after `VICTORY_MWAITX_SPIN_US` (default `50` µs), waking on fence updates |
+| `VICTORY_MWAITX_PATCH=1` | Alternative `monitorx`/`mwaitx` instruction patching mode (off by default) |
+| `VICTORY_PIPELINE_WORKERS=N` | Caps background D3D12 pipeline compilation worker threads to curb CPU/RAM spikes |
+| `VICTORY_DSTORAGE_WORKERS=N` | Caps DirectStorage decompression/read worker threads on hybrid CPUs |
+| `typed_store` UAV support | Checks host format typed UAV store capability before creating depth-twin / typed unordered views |
+| Thin LTO release builds | Enables `lto = "thin"` for `[profile.release]` in `Cargo.toml` |
+
+### Companion debug monitor (`victory monitor`)
+
+When launching with `victory run <exe> --execute`, VIctory automatically spawns the
+standalone Win32 GDI **VIctory Debug Monitor** window attached over a shared-memory
+telemetry section (`Local\victory-telemetry-<pid>`).
+
+- Tabs: **Overview**, **GPU & Mem**, **Load & CPU** (per-core utilization grid), and **Logs & Env**
+- Controls: **Pause** (`P`), **Always-on-top** (`T`), **Pin on clean exit** (`K`), **Copy Markdown snapshot** (`C`)
+- Auto-retains the window if the title crashes or exits with a non-zero exit code
+- Manual attach: `victory monitor --pid <PID>`
+- Opt-out switches: `VICTORY_MONITOR=0` (disable auto-launch), `VICTORY_PROGRESS=0` (disable startup progress updates)
+
+### Quick start (example 8 GB RTX laptop preset)
+
+```powershell
+cargo build --release -p victory
+```
+
+```powershell
+$env:VICTORY_LEVELS_ON_DEMAND   = '1'
+$env:VICTORY_ASYNC_SUBMIT       = '1'
+$env:VICTORY_QUEUE2             = '1'
+$env:VICTORY_INDIRECT_WINDOW    = '1'
+$env:VICTORY_INDIRECT_GATHER    = '1'
+$env:VICTORY_TEXTURE_NO_WAIT    = '1'
+$env:VICTORY_MERGE_GAP          = '64'
+$env:VICTORY_MERGE_RUNS         = '4096'
+$env:VICTORY_STAGING_POOL       = '0'
+$env:VICTORY_COPY_PLAIN         = '1'
+$env:VICTORY_JOIN_PARTS         = '1'
+$env:VICTORY_BACK_OWN_VIEW      = '1'
+$env:VICTORY_CARD_REHASH_RUNS   = '1'
+$env:VICTORY_PIPELINE_WAIT_MS   = '24'
+$env:VICTORY_CARD_BUFFERS_MIN_KB = '64'
+$env:VICTORY_CARD_HASH_LEN      = '1'
+$env:VICTORY_TEXTURE_BACK       = '1'
+$env:VICTORY_ABSENT_ONCE        = '1'
+$env:VICTORY_MWAITX_SLEEP       = '1'
+$env:VICTORY_TEXTURE_DROP_MIPS  = '2'
+$env:VICTORY_RESOLUTION         = '1920x1080'
+$env:VICTORY_PIPELINE_WORKERS   = '3'
+$env:VICTORY_DSTORAGE_WORKERS   = '4'
+$env:VICTORY_CARD_WINDOWS_MB    = '512'
+
+.\target\release\victory.exe run "<path\to\title.exe>" --execute --unimplemented zero
+```
+
+> [!NOTE]
+> `diagnostics/timing-run-*.txt` logs from upstream `fxceless/victory-fork` are
+> omitted on `main` in this repository so `cargo test -p xtask` (`repository_passes_policy`,
+> 512 KiB per-file limit) passes cleanly; they remain available in `upstream` history.
+
+---
+
+## Upstream (`fxceless/victory-fork`) notes & credits
+
+A work-in-progress fork of [VIctory](https://github.com/Marvisak/VIctory), a
+compatibility layer that runs an Xbox Series title natively on Windows from
+files the user supplies. Upstream `fxceless/victory-fork` follows Marvisak's
+`main` and adds fixes aimed at getting the game's world to render
+correctly and playably on one particular PC.
+
+### Credits
 
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors is the base of everything here: the loader, the runtime
