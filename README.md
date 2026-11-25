@@ -28,10 +28,12 @@ developer or publisher.
   are carried here unchanged apart from one merge conflict.
 - This fork's changes were developed with [Claude Code](https://claude.com/claude-code).
 
-## Status of this fork (2026-11-25)
+## Status of this fork (2026-11-25, late)
 
-**Not playable yet: about 8 to 10 frames per second in the first rooms and 5 to 8.5 in the
-opening cutscene (the console runs 30), and shadowed areas are black.**
+**Playable for half an hour at a time, slowly: about 9 to 12 frames per second (the console runs
+30). The tester has played from the opening through the prologue and past the first boat mission.
+Then the graphics card is lost (three times in sessions of 6, 49 and 31 minutes; cause not known
+yet). Shadowed areas are still black.**
 Tested on one machine: Windows 11, Intel i7-14700KF, NVIDIA RTX 4070 12 GB,
 32 GB RAM. The Series X profile is used throughout.
 
@@ -39,11 +41,13 @@ Tested on one machine: Windows 11, Intel i7-14700KF, NVIDIA RTX 4070 12 GB,
 |-------|--------------------|
 | Boot, menus, start screen | works, 30 fps (as upstream) |
 | Opening cutscene | plays from start to finish, in order, lit: title cards, credits cards, night and dusk shots |
-| Saves | the game autosaves a checkpoint and loads it again |
-| First gameplay scene (the prologue) | renders: characters, textures, sky, sunlit exterior; HUD, pause menu and pad input work |
+| Saves | the game autosaves a checkpoint and loads it again; test runs continue from the last checkpoint |
+| The prologue and the first missions | play: characters, textures, sky, sunlit exteriors, vehicles and boats; HUD, pause menu and pad input work. Played past the first boat mission (2026-11-25) |
+| Water | right since `VICTORY_TEXTURE_BACK=1` (pull request #999): boats float, the surface is lit (blue, waves, the sun's path). Without it boats sink and the mission fails |
 | Light in shadow | missing: the game's ray-traced bounce light and ray-traced lamp and sun shadows do not run yet, so anything the sun does not hit directly is black |
-| Frame rate in the world | 8 to 10 fps in the first rooms: 97 to 104 ms a frame at about 3,850 draws, 122 ms in a heavier view (6,774 draws). 5 to 8.5 fps through the opening cutscene, by stretch (runs 271 to 273, with `VICTORY_CARD_WINDOWS_MB`). All measured with the switch set of run 253, which is off by default: `VICTORY_LEVELS_ON_DEMAND=1 VICTORY_ASYNC_SUBMIT=1 VICTORY_QUEUE2=1 VICTORY_INDIRECT_WINDOW=1 VICTORY_TEXTURE_NO_WAIT=1 VICTORY_MERGE_GAP=64 VICTORY_MERGE_RUNS=4096 VICTORY_STAGING_POOL=0 VICTORY_COPY_PLAIN=1 VICTORY_JOIN_PARTS=1 VICTORY_BACK_OWN_VIEW=1 VICTORY_INDIRECT_GATHER=1 VICTORY_CARD_REHASH_RUNS=1`. The plain defaults were last measured at 420 to 450 ms a frame and not since. It started at 3 to 6 seconds a frame |
-| Stability | no driver hang or device loss in normal runs (a hang introduced by the wave64 update was found and fixed: its barrier form for 64-lane programs is now off unless `VICTORY_WAVE_WIDE=1`) |
+| Frame rate in the world | **9 to 12 fps in rooms and light outdoor views**: 110 ms a frame in the first rooms at about 4,700 draws (run 275), 86 to 102 ms on the water at about 1,300 draws (run 279). **5 to 6 fps in heavy outdoor views** (160 to 208 ms at 7,200 to 9,700 draws). A frame is about 70 ms plus 13 ms per 1,000 draws: the thread that prepares submissions is the limit, the card idles 12 to 40 ms a frame. It started at 3 to 6 seconds a frame. Measured with the switch set in `diagnostics/README.md` plus `VICTORY_CARD_HASH_LEN=1`; the defaults are slower |
+| Stability | **the card is lost after 30 to 50 minutes of play**: Windows reports the device removed (0x887A0005) with no driver event and no freeze, twice (runs 277 and 279); once a hang after 6 minutes with two driver events (run 276). Cause not known; crash tracing cheap enough to leave on (`VICTORY_D3D12_DRED=faults`) is in the tree to find it |
+| Memory | about 23 to 27 GB of the PC's 32 GB and 9.2 to 9.6 GB of the card's 10.3 GB budget while playing |
 
 ### Newest (2026-11-25, night UTC)
 
